@@ -1,0 +1,5 @@
+backend/model/ro3_model/
+*.bin
+*.safetensors
+*.pt
+*.pth
