@@ -1,46 +1,48 @@
-from sentence_transformers import SentenceTransformer, util
-import torch
+# app/models/ai_engine.py
+import os
+import json
+import faiss
+import pandas as pd
+from sentence_transformers import SentenceTransformer
 
 class AIEngine:
     def __init__(self):
-        # 1. අපි පුහුණු කරපු මොඩල් එක Load කරගැනීම 
-        # (ඇත්තම ප්‍රොජෙක්ට් එකේදි මේ path එක ඔයාගේ පරිගණකයේ තියෙන තැනට දෙන්න)
-        print("AI Model Load වෙමින් පවතී...")
-        self.model = SentenceTransformer('./singlish-sbert-model')
+        # paths සැකසීම
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.model = SentenceTransformer(os.path.join(base_dir, '../../singlish-sbert-model'))
         
-        # 2. දැනට Test කරන්න Ads ටිකක් මතකයේ තියාගැනීම 
-        # (Production එකේදි මේක FAISS Database එකකින් එන්න ඕනේ)
-        self.mock_ads = [
-            {"id": "1", "text": "Samsung 55 inch Smart TV eka ikmanin wikinimata"},
-            {"id": "2", "text": "Samsung ස්මාර්ට් ටීවී 55 අඩුවට"},
-            {"id": "3", "text": "Alto 2018 car for sale urgently"},
-            {"id": "4", "text": "Alto කාර් එක 2018 අඩුවට දෙනවා"},
-            {"id": "5", "text": "කොළඹ 6 ඇනෙක්ස් එකක් කුලියට"}
-        ]
+        # Resources load කිරීම
+        res_dir = os.path.join(base_dir, '../../resources')
+        self.index = faiss.read_index(os.path.join(res_dir, 'ad_faiss_index.bin'))
+        self.corpus_df = pd.read_csv(os.path.join(res_dir, 'corpus_metadata.csv'))
         
-        # Ads වල අර්ථයන් ගණනය කරලා තියාගන්නවා (Pre-compute embeddings)
-        ad_texts = [ad["text"] for ad in self.mock_ads]
-        self.corpus_embeddings = self.model.encode(ad_texts, convert_to_tensor=True)
-        print("AI Engine සූදානම්!")
+        with open(os.path.join(res_dir, 'variant_to_canonical.json'), 'r', encoding='utf-8') as f:
+            self.variant_to_canonical = json.load(f)
+            
+
+    def normalize(self, text):
+        # Singlish variant normalization: replace known variants with canonical forms
+        text = text.lower()
+        tokens = text.split()
+        normalized_tokens = [self.variant_to_canonical.get(t, t) for t in tokens]
+        return " ".join(normalized_tokens)
 
     def search(self, query: str, top_k: int = 5):
-        # සෙවුම් වචනයේ අර්ථය ගණනය කිරීම
-        query_embedding = self.model.encode(query, convert_to_tensor=True)
-        
-        # සමාන Ads සෙවීම
-        search_results = util.semantic_search(query_embedding, self.corpus_embeddings, top_k=top_k)
+        norm_query = self.normalize(query)
+        embedding = self.model.encode([norm_query], normalize_embeddings=True).astype("float32")
+        scores, indices = self.index.search(embedding, top_k)
         
         results = []
-        for result in search_results[0]:
-            ad = self.mock_ads[result['corpus_id']]
-            score = round(result['score'] * 100, 2)
-            results.append({
-                "id": ad["id"],
-                "text": ad["text"],
-                "similarity_score": score
-            })
-            
+        for s, i in zip(scores[0], indices[0]):
+            if i != -1: # FAISS index එකේ valid දත්ත විතරක් ගන්න
+                # original_text එක ලබාගන්න (ඔයාගේ CSV එකේ තියෙන නම හරියටම දෙන්න)
+                ad_text = self.corpus_df.iloc[i]['original_text'] 
+                
+                results.append({
+                    "id": str(i), # Index එකම ID එක විදියට දාන්න
+                    "text": ad_text,
+                    "similarity_score": round(float(s) * 100, 2)
+                })
         return results
 
-# Singleton instance එකක් හදනවා හැමතැනම පාවිච්චි කරන්න
 ai_engine = AIEngine()
